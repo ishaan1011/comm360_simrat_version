@@ -18,6 +18,37 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+interface ApiUser {
+  id: string;
+  name: string;
+  email: string;
+  avatar_url?: string;
+}
+
+interface ApiMessage {
+  id: string;
+  content: string;
+  sender_id: string;
+  conversation_id: string;
+  created_at: string;
+  type?: string;
+}
+
+interface ApiConversation {
+  id: string;
+  participants: ApiUser[];
+  last_message?: ApiMessage;
+  unread_count?: number;
+}
+
+// Add these interfaces for meeting and message payloads
+interface MeetingData {
+  [key: string]: unknown;
+}
+interface MessageData {
+  [key: string]: unknown;
+}
+
 // Auth API           
 export const auth = {
   login: async (email: string, password: string) => {
@@ -31,7 +62,7 @@ export const auth = {
     const response = await api.post('/api/auth/google', { idToken });
     return response.data;
   },
-  signUp: async (email: string, password: string, extra?: any) => {
+  signUp: async (email: string, password: string, extra?: Record<string, unknown>) => {
     const response = await api.post('/api/auth/signup', { email, password, ...extra });
     return response.data;
   },
@@ -40,18 +71,18 @@ export const auth = {
 // Profile API
 export const profile = {
   get: async () => {
-    const response = await api.get('/profile');
+    const response = await api.get('/api/profile');
     return response.data;
   },
-  update: async (data: any) => {
-    const response = await api.put('/profile', data);
+  update: async (data: ApiUser) => {
+    const response = await api.put('/api/profile', data);
     return response.data;
   },
-  updateSettings: async (settings: any) => {
+  updateSettings: async (settings: Record<string, unknown>) => {
     const response = await api.put('/profile/settings', settings);
     return response.data;
   },
-  updateNotifications: async (preferences: any) => {
+  updateNotifications: async (preferences: Record<string, unknown>) => {
     const response = await api.put('/profile/notifications', preferences);
     return response.data;
   },
@@ -65,7 +96,7 @@ export const profile = {
 
 // Meetings API
 export const meetings = {
-  create: async (data: any) => {
+  create: async (data: MeetingData) => {
     const response = await api.post('/api/meetings', data);
     return response.data;
   },
@@ -77,7 +108,7 @@ export const meetings = {
     const response = await api.get(`/api/meetings/${id}`);
     return response.data;
   },
-  update: async (id: string, data: any) => {
+  update: async (id: string, data: MeetingData) => {
     const response = await api.put(`/api/meetings/${id}`, data);
     return response.data;
   },
@@ -96,7 +127,7 @@ export const meetings = {
 
 // Messages API
 export const messages = {
-  createConversation: async (data: any) => {
+  createConversation: async (data: MessageData) => {
     const response = await api.post('/api/messages/conversations', data);
     return response.data;
   },
@@ -108,7 +139,7 @@ export const messages = {
     const response = await api.get(`/api/messages/conversations/${id}`);
     return response.data;
   },
-  sendMessage: async (conversationId: string, data: any) => {
+  sendMessage: async (conversationId: string, data: MessageData) => {
     const response = await api.post(`/api/messages/conversations/${conversationId}/messages`, data);
     return response.data;
   },
@@ -127,6 +158,10 @@ export const messages = {
   },
   reactToMessage: async (messageId: string, emoji: string) => {
     const response = await api.patch(`/api/messages/${messageId}/reactions`, { emoji });
+    return response.data;
+  },
+  deleteConversation: async (conversationId: string) => {
+    const response = await api.delete(`/api/messages/conversations/${conversationId}`);
     return response.data;
   },
 };

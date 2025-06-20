@@ -20,23 +20,36 @@ import {
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import api from '@/lib/api';
+import { useRealTimeMessages } from '@/hooks/useRealTimeMessages';
 
 interface User {
   id: string;
-  username: string;
-  full_name: string;
+  username?: string;
+  full_name?: string;
   avatar_url?: string;
+  email?: string;
+}
+
+interface Reaction {
+  emoji: string;
+  users: string[];
 }
 
 interface Message {
-  id: string;
+  id?: string;
+  tempId?: string;
+  conversation?: string;
+  conversation_id?: string;
+  sender?: string;
+  sender_id?: string;
   content: string;
-  sender_id: string;
-  conversation_id: string;
-  message_type: string;
-  created_at: string;
-  sender?: User;
-  reactions?: { emoji: string; users: string[] }[];
+  createdAt?: string;
+  created_at?: string;
+  status?: 'sending' | 'sent' | 'delivered' | 'failed';
+  senderObj?: User;
+  readBy?: string[];
+  type?: string;
+  reactions?: Reaction[];
 }
 
 interface Conversation {
@@ -48,14 +61,14 @@ interface Conversation {
 
 interface TypingIndicator {
   user_id: string;
-  username: string;
   conversation_id: string;
+  timestamp: number;
 }
 
 interface EnhancedChatWindowProps {
   conversation: Conversation;
   messages: Message[];
-  currentUser: any;
+  currentUser: User;
   typingIndicators: TypingIndicator[];
   onlineUsers: string[];
   onSendMessage: (content: string, type?: string) => void;
@@ -78,6 +91,10 @@ export const EnhancedChatWindow = ({
   const { toast } = useToast();
   const [updatingReactions, setUpdatingReactions] = useState<string | null>(null);
   const [localMessages, setLocalMessages] = useState(messages);
+  const { markMessagesAsRead, getMessageStatus, sendTyping } = useRealTimeMessages();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState<string[]>([]);
+  const [searchActive, setSearchActive] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -87,6 +104,16 @@ export const EnhancedChatWindow = ({
     scrollToBottom();
     setLocalMessages(messages);
   }, [messages]);
+
+  // Mark messages as read when chat is focused
+  useEffect(() => {
+    if (document.hasFocus() && messages.length > 0) {
+      const unread = messages.filter(m => !(m.readBy || []).includes(currentUser.id)).map(m => m.id);
+      if (unread.length > 0) {
+        markMessagesAsRead(conversation.id, unread);
+      }
+    }
+  }, [messages, conversation.id, currentUser.id, markMessagesAsRead]);
 
   const handleSend = () => {
     if (message.trim()) {
@@ -123,6 +150,26 @@ export const EnhancedChatWindow = ({
     });
   };
 
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const file = e.target.files[0];
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch(`/api/messages/conversations/${conversation.id}/attachments`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.url) {
+        onSendMessage(data.url, 'file');
+        toast({ title: 'File uploaded', description: file.name });
+      }
+    } catch (e) {
+      toast({ title: 'Upload failed', description: 'Could not upload file', variant: 'destructive' });
+    }
+  };
+
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -153,6 +200,37 @@ export const EnhancedChatWindow = ({
     }
   };
 
+  const handleRetry = (msg: Message) => {
+    try {
+      onSendMessage(msg.content);
+      toast({ title: 'Retrying...', description: 'Message is being resent.' });
+    } catch (e) {
+      toast({ title: 'Retry failed', description: 'Could not resend message.', variant: 'destructive' });
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchTerm.trim()) return;
+    try {
+      const res = await fetch(`/api/messages/conversations/${conversation.id}/messages/search?q=${encodeURIComponent(searchTerm)}`);
+      const data = await res.json();
+      setSearchResults(data.map((msg: Message) => msg.id));
+      setSearchActive(true);
+      if (data.length > 0) {
+        const el = document.getElementById(`msg-${data[0].id}`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    } catch (e) {
+      toast({ title: 'Search failed', description: 'Could not search messages', variant: 'destructive' });
+    }
+  };
+
+  const clearSearch = () => {
+    setSearchTerm('');
+    setSearchResults([]);
+    setSearchActive(false);
+  };
+
   const renderMessage = (msg: Message, index: number) => {
     const isOwnMessage = msg.sender_id === currentUser.id;
     const prevMessage = index > 0 ? messages[index - 1] : null;
@@ -161,6 +239,7 @@ export const EnhancedChatWindow = ({
     const showAvatar = !prevMessage || 
       prevMessage.sender_id !== msg.sender_id ||
       (new Date(msg.created_at).getTime() - new Date(prevMessage.created_at).getTime()) > 300000; // 5 minutes
+    const isSearchResult = searchResults.includes(msg.id);
 
     // Check for mentions in the message
     const renderContentWithMentions = (content: string) => {
@@ -187,77 +266,88 @@ export const EnhancedChatWindow = ({
     };
 
     return (
-      <div key={msg.id}>
-        {showDate && (
-          <div className="flex justify-center my-4">
-            <Badge variant="secondary" className="bg-slate-700 text-slate-300">
-              {formatDate(msg.created_at)}
-            </Badge>
-          </div>
+      <div key={msg.id || msg.tempId} id={`msg-${msg.id}`}
+        className={`flex gap-3 mb-2 ${isOwnMessage ? 'flex-row-reverse' : ''} ${showAvatar ? 'mt-4' : 'mt-1'} ${isSearchResult ? 'bg-yellow-100 dark:bg-yellow-900' : ''}`}>
+        {showAvatar && !isOwnMessage && (
+          <Avatar className="h-8 w-8 flex-shrink-0">
+            <AvatarImage src={msg.senderObj?.avatar_url} />
+            <AvatarFallback className="text-xs">
+              {msg.senderObj?.full_name?.charAt(0) || msg.senderObj?.username?.charAt(0)}
+            </AvatarFallback>
+          </Avatar>
         )}
         
-        <div className={`flex gap-3 mb-2 ${isOwnMessage ? 'flex-row-reverse' : ''} ${showAvatar ? 'mt-4' : 'mt-1'}`}>
+        {!showAvatar && !isOwnMessage && (
+          <div className="w-8 flex-shrink-0" />
+        )}
+        
+        <div className={`flex flex-col ${isOwnMessage ? 'items-end' : 'items-start'} max-w-xs lg:max-w-md`}>
           {showAvatar && !isOwnMessage && (
-            <Avatar className="h-8 w-8 flex-shrink-0">
-              <AvatarImage src={msg.sender?.avatar_url} />
-              <AvatarFallback className="text-xs">
-                {msg.sender?.full_name?.charAt(0) || msg.sender?.username?.charAt(0)}
-              </AvatarFallback>
-            </Avatar>
-          )}
-          
-          {!showAvatar && !isOwnMessage && (
-            <div className="w-8 flex-shrink-0" />
-          )}
-          
-          <div className={`flex flex-col ${isOwnMessage ? 'items-end' : 'items-start'} max-w-xs lg:max-w-md`}>
-            {showAvatar && !isOwnMessage && (
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-medium text-slate-300">
-                  {msg.sender?.full_name || msg.sender?.username}
-                </span>
-                <span className="text-xs text-slate-500">
-                  {formatTime(msg.created_at)}
-                </span>
-              </div>
-            )}
-            
-            <div className={`rounded-lg px-3 py-2 ${
-              isOwnMessage 
-                ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white' 
-                : 'bg-slate-700 text-white'
-            }`}>
-              <p className="text-sm break-words whitespace-pre-wrap">
-                {renderContentWithMentions(msg.content)}
-              </p>
-            </div>
-            
-            {isOwnMessage && (
-              <span className="text-xs text-slate-500 mt-1">
-                {formatTime(msg.created_at)}
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-medium text-slate-300">
+                {msg.senderObj?.full_name || msg.senderObj?.username}
               </span>
-            )}
-
-            {Array.isArray(msg.reactions) && (
-              <div className="flex gap-1 mt-1">
-                {EMOJI_OPTIONS.map((emoji) => {
-                  const reaction = msg.reactions.find((r: any) => r.emoji === emoji);
-                  const count = reaction ? reaction.users.length : 0;
-                  const reacted = reaction && reaction.users.includes(currentUser.id);
-                  return (
-                    <button
-                      key={emoji}
-                      className={`px-2 py-1 rounded-full text-lg border ${reacted ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-200'} ${updatingReactions === msg.id + emoji ? 'opacity-50' : ''}`}
-                      disabled={!!updatingReactions}
-                      onClick={() => handleReact(msg.id, emoji)}
-                    >
-                      {emoji} {count > 0 && <span className="ml-1 text-xs">{count}</span>}
-                    </button>
-                  );
-                })}
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-xs text-gray-400">{formatTime(msg.created_at)}</span>
+                <span className="text-xs text-gray-400 ml-2">{getMessageStatus(msg, currentUser.id, conversation.participants)}</span>
+                {msg.status === 'failed' && (
+                  <button
+                    className="ml-2 text-xs text-red-500 underline cursor-pointer"
+                    onClick={() => handleRetry(msg)}
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
-            )}
+            </div>
+          )}
+          
+          <div className={`rounded-lg px-3 py-2 ${
+            isOwnMessage 
+              ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white' 
+              : 'bg-slate-700 text-white'
+          }`}>
+            <p className="text-sm break-words whitespace-pre-wrap">
+              {renderContentWithMentions(msg.content)}
+            </p>
           </div>
+          
+          {isOwnMessage && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-gray-400">{formatTime(msg.created_at)}</span>
+              <span className="text-xs text-gray-400 ml-2">{getMessageStatus(msg, currentUser.id, conversation.participants)}</span>
+            </div>
+          )}
+
+          {Array.isArray(msg.reactions) && (
+            <div className="flex gap-1 mt-1">
+              {EMOJI_OPTIONS.map((emoji) => {
+                const reaction = msg.reactions.find((r: Reaction) => r.emoji === emoji);
+                const count = reaction ? reaction.users.length : 0;
+                const reacted = reaction && reaction.users.includes(currentUser.id);
+                return (
+                  <button
+                    key={emoji}
+                    className={`px-2 py-1 rounded-full text-lg border ${reacted ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-200'} ${updatingReactions === msg.id + emoji ? 'opacity-50' : ''}`}
+                    disabled={!!updatingReactions}
+                    onClick={() => handleReact(msg.id, emoji)}
+                  >
+                    {emoji} {count > 0 && <span className="ml-1 text-xs">{count}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {msg.type === 'file' && msg.content && (
+            <div className="mt-2">
+              {msg.content.match(/\.(jpg|jpeg|png|gif)$/i) ? (
+                <img src={msg.content} alt="attachment" className="max-w-xs max-h-40 rounded" />
+              ) : (
+                <a href={msg.content} download className="text-blue-500 underline">Download file</a>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -266,6 +356,20 @@ export const EnhancedChatWindow = ({
   const otherParticipant = conversation.type === 'direct' 
     ? conversation.participants.find(p => p.id !== currentUser.id)
     : null;
+
+  // Helper to get the display name for the chat header
+  const getChatHeaderName = () => {
+    if (conversation.type === 'group') {
+      return conversation.name;
+    }
+    if (otherParticipant) {
+      return otherParticipant.full_name || otherParticipant.username || otherParticipant.email;
+    }
+    return '';
+  };
+
+  // Show typing indicator for other participants
+  const isSomeoneTyping = typingIndicators.some(t => t.conversation_id === conversation.id && t.user_id !== currentUser.id);
 
   return (
     <>
@@ -292,7 +396,7 @@ export const EnhancedChatWindow = ({
             )}
             
             <div>
-              <h3 className="font-semibold text-white">{conversation.name}</h3>
+              <h3 className="font-semibold text-white">{getChatHeaderName()}</h3>
               <p className="text-sm text-slate-400">
                 {conversation.type === 'group' 
                   ? `${conversation.participants.length} members`
@@ -355,12 +459,17 @@ export const EnhancedChatWindow = ({
         {/* Search Bar */}
         {showSearch && (
           <div className="mt-3">
-            <Input
-              placeholder="Search in conversation..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="bg-slate-700 border-slate-600 text-white"
-            />
+            <div className="flex items-center gap-2 p-2 border-b border-slate-700">
+              <Input
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSearch(); }}
+                placeholder="Search in conversation..."
+                className="flex-1"
+              />
+              <Button onClick={handleSearch} size="sm">Search</Button>
+              {searchActive && <Button onClick={clearSearch} size="sm" variant="outline">Clear</Button>}
+            </div>
           </div>
         )}
       </div>
@@ -393,21 +502,16 @@ export const EnhancedChatWindow = ({
                     !searchQuery || 
                     msg.content.toLowerCase().includes(searchQuery.toLowerCase())
                   )
-                  .map((msg, index) => renderMessage(msg, index))
+                  .map((msg, index) => (
+                    <div key={msg.id || `msg-${index}`}>
+                      {renderMessage(msg, index)}
+                    </div>
+                  ))
                 }
                 
                 {/* Typing Indicators */}
-                {typingIndicators.length > 0 && (
-                  <div className="flex gap-3 mb-4">
-                    <div className="w-8 flex-shrink-0" />
-                    <div className="bg-slate-700 rounded-lg px-3 py-2">
-                      <div className="flex gap-1">
-                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
-                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                      </div>
-                    </div>
-                  </div>
+                {isSomeoneTyping && (
+                  <div className="text-xs text-blue-400 py-2">Someone is typing...</div>
                 )}
                 
                 <div ref={messagesEndRef} />
@@ -418,15 +522,10 @@ export const EnhancedChatWindow = ({
           {/* Message Input */}
           <div className="p-4 border-t border-slate-700 bg-slate-800">
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleFileUpload}
-                className="text-slate-400 hover:text-white"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              
+              <label className="cursor-pointer">
+                <Paperclip className="w-5 h-5 text-gray-400" />
+                <input type="file" className="hidden" onChange={handleFileChange} />
+              </label>
               <Button
                 variant="ghost"
                 size="sm"
@@ -439,7 +538,10 @@ export const EnhancedChatWindow = ({
               <Input
                 ref={inputRef}
                 value={message}
-                onChange={(e) => setMessage(e.target.value)}
+                onChange={(e) => {
+                  setMessage(e.target.value);
+                  sendTyping(conversation.id);
+                }}
                 onKeyPress={handleKeyPress}
                 placeholder={`Message ${conversation.name}...`}
                 className="flex-1 bg-slate-700 border-slate-600 text-white"

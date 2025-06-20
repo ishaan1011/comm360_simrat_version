@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,17 +13,67 @@ import {
   MoreVertical,
   Phone,
   Video,
-  Pin
+  Pin,
+  Trash2
 } from 'lucide-react';
 import { useRealTimeMessages } from '@/hooks/useRealTimeMessages';
 import { EnhancedChatWindow } from './EnhancedChatWindow';
 import { CreateConversationDialog } from './CreateConversationDialog';
 
+interface FlatUser {
+  id: string;
+  username?: string;
+  full_name?: string;
+  avatar_url?: string;
+  email?: string;
+}
+
+interface NestedUser {
+  id: string;
+  user_id?: string;
+  role?: string;
+  user: FlatUser;
+}
+
+type Participant = FlatUser | NestedUser;
+
 interface User {
   id: string;
-  name: string;
-  email: string;
-  avatar?: string;
+  username?: string;
+  full_name?: string;
+  avatar_url?: string;
+  email?: string;
+}
+
+interface Message {
+  id?: string;
+  tempId?: string;
+  conversation?: string;
+  conversation_id?: string;
+  sender?: string;
+  sender_id?: string;
+  content: string;
+  createdAt?: string;
+  created_at?: string;
+  status?: 'sending' | 'sent' | 'delivered' | 'failed';
+  senderObj?: User;
+  readBy?: string[];
+  type?: string;
+}
+
+interface TypingIndicator {
+  user_id: string;
+  conversation_id: string;
+  timestamp: number;
+}
+
+interface Conversation {
+  _id: string;
+  title?: string;
+  type?: string;
+  participants: User[];
+  lastMessage?: Message;
+  unreadCount?: number;
 }
 
 interface EnhancedMessagingViewProps {
@@ -38,24 +88,82 @@ export const EnhancedMessagingView = ({ currentUser }: EnhancedMessagingViewProp
   const {
     conversations,
     messages,
-    typingIndicators,
-    onlineUsers,
     loading,
     sendMessage,
     fetchMessages,
-    createConversation
+    createConversation,
+    deleteConversation
   } = useRealTimeMessages();
 
-  const selectedConversation = conversations.find(c => c.id === selectedConversationId);
-  const conversationMessages = selectedConversationId ? messages[selectedConversationId] || [] : [];
+  // Add missing properties that the component expects
+  const typingIndicators: TypingIndicator[] = [];
+  const onlineUsers: string[] = [];
 
-  const filteredConversations = conversations.filter(conv =>
-    conv.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    conv.participants.some(p => 
-      p.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.username?.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  );
+  const selectedConversation = conversations?.find(c => c._id === selectedConversationId);
+  const conversationMessages = selectedConversationId ? messages || [] : [];
+
+  const getParticipantName = (p: Participant) => (p as FlatUser).full_name || (p as FlatUser).username || (p as NestedUser).user?.full_name || (p as NestedUser).user?.username || '';
+  const getParticipantAvatar = (p: Participant) => (p as FlatUser).avatar_url || (p as NestedUser).user?.avatar_url || '';
+  const getParticipantId = (p: Participant) => (p as FlatUser).id || (p as NestedUser).user_id || (p as NestedUser).user?.id || '';
+
+  // Helper to get conversation title: for direct, show other participant's name; for group, show title
+  const getConversationTitle = (conv: Conversation): string => {
+    if (conv.type === 'group' && conv.title) return conv.title;
+    if (conv.participants?.length === 2) {
+      const other = conv.participants.find(p => getParticipantId(p) !== currentUser.id);
+      return (getParticipantName(other!) || '');
+    }
+    return conv.title || '';
+  };
+
+  // Adapter to convert hook conversation to EnhancedChatWindow conversation
+  const adaptedConversation = selectedConversation ? {
+    id: selectedConversation._id,
+    name: getConversationTitle(selectedConversation),
+    type: selectedConversation.type || 'direct',
+    participants: selectedConversation.participants.map((p: any) => {
+      if (typeof p === 'object' && 'user' in p && p.user) {
+        // NestedUser
+        return {
+          id: p.user.id,
+          username: p.user.username,
+          full_name: p.user.full_name,
+          avatar_url: p.user.avatar_url
+        };
+      } else {
+        // FlatUser
+        return {
+          id: p.id,
+          username: p.username,
+          full_name: p.full_name,
+          avatar_url: p.avatar_url
+        };
+      }
+    })
+  } : null;
+
+  // Helper to safely get sender username for a message
+  const getSenderUsername = (sender: unknown): string => {
+    if (sender && typeof sender === 'object' && 'username' in (sender as any) && (sender as any).username) {
+      return (sender as any).username;
+    }
+    return '';
+  };
+
+  // Ensure conversations is always an array and add null checks
+  const safeConversations = conversations || [];
+  const filteredConversations = safeConversations.filter(conv => {
+    const titleOrName = getConversationTitle(conv);
+    const titleMatch = (titleOrName || '').toLowerCase().includes(searchQuery.toLowerCase());
+    const participantMatch = conv.participants?.some(p => {
+      const participantName = getParticipantName(p) || '';
+      return participantName.toLowerCase().includes(searchQuery.toLowerCase());
+    }) || false;
+    return titleMatch || participantMatch;
+  });
+
+  // Calculate total unread count
+  const totalUnread = safeConversations.reduce((sum, conv) => sum + (conv.unreadCount || 0), 0);
 
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
@@ -72,17 +180,46 @@ export const EnhancedMessagingView = ({ currentUser }: EnhancedMessagingViewProp
   };
 
   const handleConversationSelect = (conversationId: string) => {
+    if (!conversationId) {
+      console.error('conversationId is undefined or null');
+      return;
+    }
+    
     setSelectedConversationId(conversationId);
     fetchMessages(conversationId);
   };
 
-  const handleCreateConversation = async (participantIds: string[], name?: string, type?: string) => {
-    const conversationId = await createConversation(participantIds, name, type);
+  const handleCreateConversation = async (
+    participantIds: string[] = [],
+    name?: string,
+    type?: string,
+    conversationId?: string
+  ) => {
+    // If conversationId is provided, just select it
     if (conversationId) {
       setSelectedConversationId(conversationId);
-      setShowCreateDialog(false);
+      return;
+    }
+    // Otherwise, create and select
+    const newId = await createConversation(participantIds, name, type);
+    if (newId) {
+      setSelectedConversationId(newId);
     }
   };
+
+  useEffect(() => {
+    console.log('Conversations changed:', conversations);
+    console.log('Filtered conversations:', filteredConversations);
+  }, [conversations, filteredConversations]);
+
+  // Add error boundary for debugging
+  if (!currentUser) {
+    return (
+      <div className="h-full bg-slate-900 flex items-center justify-center">
+        <div className="text-white">User not authenticated</div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -99,7 +236,14 @@ export const EnhancedMessagingView = ({ currentUser }: EnhancedMessagingViewProp
         {/* Header */}
         <div className="p-4 border-b border-slate-700">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-white">Messages</h2>
+            <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+              Messages
+              {totalUnread > 0 && (
+                <span className="inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white bg-red-600 rounded-full">
+                  {totalUnread}
+                </span>
+              )}
+            </h2>
             <Button
               size="sm"
               onClick={() => setShowCreateDialog(true)}
@@ -127,83 +271,100 @@ export const EnhancedMessagingView = ({ currentUser }: EnhancedMessagingViewProp
             <div className="p-8 text-center">
               <MessageSquare className="h-12 w-12 text-slate-600 mx-auto mb-4" />
               <p className="text-slate-400">No conversations found</p>
-              <Button
-                size="sm"
-                onClick={() => setShowCreateDialog(true)}
-                className="mt-2"
-                variant="outline"
-              >
-                Start a conversation
+              <Button onClick={() => setShowCreateDialog(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                New Conversation
               </Button>
             </div>
           ) : (
             filteredConversations.map((conversation) => {
-              const otherParticipant = conversation.type === 'direct' 
-                ? conversation.participants.find(p => p.id !== currentUser.id)
-                : null;
+              // Skip conversations without a valid ID
+              if (!conversation._id) {
+                console.error('Conversation missing ID:', conversation);
+                return null;
+              }
+              
+              const otherParticipant = conversation.participants?.find(p => getParticipantId(p) !== currentUser.id);
 
-              const isOnline = otherParticipant ? onlineUsers.includes(otherParticipant.id) : false;
+              const isOnline = otherParticipant ? onlineUsers?.includes(getParticipantId(otherParticipant)) : false;
 
               return (
                 <div
-                  key={conversation.id}
-                  onClick={() => handleConversationSelect(conversation.id)}
-                  className={`p-4 border-b border-slate-700 cursor-pointer transition-colors hover:bg-slate-750 ${
-                    selectedConversationId === conversation.id ? 'bg-slate-700' : ''
+                  key={conversation._id}
+                  className={`p-4 border-b border-slate-700 flex items-center justify-between group ${
+                    selectedConversationId === conversation._id ? 'bg-slate-700' : 'hover:bg-slate-750'
                   }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="relative">
-                      {conversation.type === 'direct' && otherParticipant ? (
-                        <>
-                          <Avatar className="h-12 w-12">
-                            <AvatarImage src={otherParticipant.avatar_url} />
-                            <AvatarFallback>
-                              {otherParticipant.full_name?.charAt(0) || otherParticipant.username?.charAt(0)}
-                            </AvatarFallback>
-                          </Avatar>
-                          {isOnline && (
-                            <div className="absolute -bottom-1 -right-1 h-4 w-4 bg-green-500 border-2 border-slate-800 rounded-full"></div>
-                          )}
-                        </>
-                      ) : (
-                        <div className="h-12 w-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
-                          <Users className="h-6 w-6 text-white" />
-                        </div>
-                      )}
-                      
-                      {conversation.unread_count > 0 && (
-                        <Badge className="absolute -top-1 -right-1 bg-red-500 text-white text-xs h-5 w-5 flex items-center justify-center rounded-full">
-                          {conversation.unread_count}
-                        </Badge>
-                      )}
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <h3 className="font-medium text-white truncate">
-                          {conversation.name}
-                        </h3>
-                        {conversation.last_message && (
-                          <span className="text-xs text-slate-400">
-                            {formatTime(conversation.last_message.created_at)}
-                          </span>
+                  <div
+                    className="flex-1 min-w-0 cursor-pointer"
+                    onClick={() => handleConversationSelect(conversation._id)}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="relative">
+                        {otherParticipant ? (
+                          <>
+                            <Avatar className="h-12 w-12">
+                              <AvatarImage src={getParticipantAvatar(otherParticipant)} />
+                              <AvatarFallback>
+                                {getParticipantName(otherParticipant).charAt(0)}
+                              </AvatarFallback>
+                            </Avatar>
+                            {isOnline && (
+                              <div className="absolute -bottom-1 -right-1 h-4 w-4 bg-green-500 border-2 border-slate-800 rounded-full"></div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="h-12 w-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
+                            <Users className="h-6 w-6 text-white" />
+                          </div>
+                        )}
+                        
+                        {conversation.unreadCount > 0 && (
+                          <Badge className="absolute -top-1 -right-1 bg-red-500 text-white text-xs h-5 w-5 flex items-center justify-center rounded-full">
+                            {conversation.unreadCount}
+                          </Badge>
                         )}
                       </div>
-                      
-                      {conversation.last_message && (
-                        <p className="text-sm text-slate-400 truncate mt-1">
-                          {conversation.last_message.sender?.username}: {conversation.last_message.content}
-                        </p>
-                      )}
-                      
-                      {conversation.type === 'group' && (
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <h3 className="font-medium text-white truncate">
+                            {getConversationTitle(conversation)}
+                          </h3>
+                          {conversation.lastMessage && (
+                            <span className="text-xs text-slate-400">
+                              {formatTime(conversation.lastMessage.created_at)}
+                            </span>
+                          )}
+                        </div>
+                        
+                        {conversation.lastMessage && (
+                          <p className="text-sm text-slate-400 truncate mt-1">
+                            {getSenderUsername(conversation.lastMessage.sender ?? undefined)
+                              ? getSenderUsername(conversation.lastMessage.sender ?? undefined) + ': '
+                              : ''}
+                            {conversation.lastMessage.content}
+                          </p>
+                        )}
+                        
                         <p className="text-xs text-slate-500 mt-1">
-                          {conversation.participants.length} members
+                          {conversation.participants?.length || 0} members
                         </p>
-                      )}
+                      </div>
                     </div>
                   </div>
+                  <button
+                    className="ml-2 p-1 rounded hover:bg-red-600/20 text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Delete conversation"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (window.confirm('Are you sure you want to delete this conversation and all its messages?')) {
+                        await deleteConversation(conversation._id);
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </div>
               );
             })
@@ -213,14 +374,14 @@ export const EnhancedMessagingView = ({ currentUser }: EnhancedMessagingViewProp
 
       {/* Chat Window */}
       <div className="flex-1 flex flex-col">
-        {selectedConversation ? (
+        {adaptedConversation ? (
           <EnhancedChatWindow
-            conversation={selectedConversation}
-            messages={conversationMessages}
+            conversation={adaptedConversation}
+            messages={conversationMessages as Message[]}
             currentUser={currentUser}
-            typingIndicators={[]}
-            onlineUsers={[]}
-            onSendMessage={(content, type) => sendMessage(selectedConversationId!, content, type)}
+            typingIndicators={typingIndicators}
+            onlineUsers={onlineUsers}
+            onSendMessage={(content, type) => sendMessage(selectedConversationId!, content)}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center">
@@ -240,9 +401,11 @@ export const EnhancedMessagingView = ({ currentUser }: EnhancedMessagingViewProp
       {/* Create Conversation Dialog */}
       <CreateConversationDialog
         open={showCreateDialog}
-        onClose={() => setShowCreateDialog(false)}
-        onCreateConversation={handleCreateConversation}
-        currentUser={currentUser}
+        onOpenChange={setShowCreateDialog}
+        onConversationCreated={async (conversationId) => {
+          await handleCreateConversation([], undefined, undefined, conversationId);
+          setShowCreateDialog(false);
+        }}
       />
     </div>
   );

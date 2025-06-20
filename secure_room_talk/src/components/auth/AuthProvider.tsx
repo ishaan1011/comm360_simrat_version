@@ -1,22 +1,23 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import api from '@/lib/api';
 
-interface User {
+interface AuthUser {
   id: string;
   email: string;
-  username: string;
-  full_name: string;
+  name?: string;
   avatar_url?: string;
 }
 
 interface AuthContextType {
-  user: User | null;
+  user: AuthUser | null;
   loading: boolean;
   error: string | null;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   signInWithGoogle: (idToken: string) => Promise<void>;
-  signUp: (email: string, password: string, extra?: any) => Promise<void>;
+  signUp: (email: string, password: string, extra?: Record<string, unknown>) => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -30,7 +31,7 @@ export const useAuth = () => {
 };
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,7 +100,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  const signUp = async (email: string, password: string, extra?: any) => {
+  const signUp = async (email: string, password: string, extra?: Record<string, unknown>) => {
     try {
       setLoading(true);
       setError(null);
@@ -123,6 +124,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     signOut,
     signInWithGoogle,
     signUp,
+    login: signIn,
+    logout: signOut,
   };
 
   return (

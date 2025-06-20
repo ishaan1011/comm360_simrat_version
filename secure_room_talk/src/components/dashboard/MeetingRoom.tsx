@@ -37,8 +37,15 @@ interface Participant {
   };
 }
 
+interface Meeting {
+  id: string;
+  title: string;
+  host_id: string;
+  is_active: boolean;
+}
+
 interface MeetingRoomProps {
-  meeting: any;
+  meeting: Meeting;
   currentUser: User;
   onLeave: () => void;
 }
