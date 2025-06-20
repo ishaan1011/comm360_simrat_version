@@ -1,0 +1,61 @@
+# Python requirements for Comm360 development tools
+# Common utilities for development, deployment, and database management
+
+# MongoDB tools
+pymongo==4.6.1
+motor==3.3.2
+
+# Development and deployment
+docker==7.0.0
+docker-compose==1.29.2
+
+# Database management and utilities
+mongo-connector==2.5.1
+pymongo-migrate==1.0.0
+
+# API testing and development
+requests==2.31.0
+httpx==0.25.2
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Environment and configuration management
+python-dotenv==1.0.0
+pyyaml==5.4
+
+# File processing and utilities
+click==8.1.7
+rich==13.7.0
+tqdm==4.66.1
+
+# Security and authentication testing
+cryptography==41.0.7
+passlib==1.7.4
+
+# Monitoring and logging
+structlog==23.2.0
+prometheus-client==0.19.0
+
+# Data processing and analysis
+pandas==2.1.4
+numpy==1.25.2
+
+# Web scraping and automation (if needed)
+selenium==4.15.2
+beautifulsoup4==4.12.2
+
+# Image processing (if needed for avatars/media)
+pillow==10.1.0
+
+# JSON and data validation
+jsonschema==4.20.0
+marshmallow==3.20.1
+
+# Async utilities
+aiohttp==3.9.1
+asyncio-mqtt==0.16.1
+
+# Development utilities
+black==23.11.0
+flake8==6.1.0
+mypy==1.7.1 
